@@ -10,6 +10,7 @@ const WALL = 1;
 const SAFE = 2;
 const KEY = 3;
 const EXIT = 4;
+const DOOR = 5;
 
 // Game state
 const game = {
@@ -142,7 +143,10 @@ function isWalkable(x, y, isMonster = false) {
     if (x < 0 || x >= N || y < 0 || y >= N) return false;
     const tile = game.maze[y][x];
     if (tile === WALL) return false;
-    if (isMonster && tile === SAFE) return false; // monster can't enter safe zones
+    // If monster, it must not enter safe zones
+    if (isMonster && tile === SAFE) return false;
+    // Doors are not walkable by player (unless you want keys/unlock logic)
+    if (!isMonster && tile === DOOR) return false;
     return true;
 }
 
@@ -176,76 +180,55 @@ function findPath(from, to, isMonster = false) {
 
 // Monster AI - follows player trail with some intelligence
 function updateMonster() {
+    if (!game.monster) return;
+    // record previous position for swap detection
+    game.prevMonster = { x: game.monster.x, y: game.monster.y };
+
     if (game.monster.cooldown > 0) {
         game.monster.cooldown--;
         return;
     }
 
-    // Target: most recent player position in trail, or player directly
+    // choose target (scent / recent trail or player)
     let target = game.player;
-    
-    // If player has left a trail, follow the "scent"
-    if (game.playerTrail.length > 5) {
-        const recentTrail = game.playerTrail.slice(-10);
-        // Find closest trail point to monster
-        let closest = null;
-        let minDist = Infinity;
-        for (const pos of recentTrail) {
-            const dist = Math.abs(pos.x - game.monster.x) + Math.abs(pos.y - game.monster.y);
-            if (dist < minDist) {
-                minDist = dist;
-                closest = pos;
-            }
-        }
-        if (closest) target = closest;
+    if (game.playerTrail && game.playerTrail.length > 5) {
+        target = game.playerTrail[0]; // follow most recent trail point
     }
 
     const path = findPath(game.monster, target, true);
     if (path && path.length > 0) {
-        game.monster.x = path[0].x;
-        game.monster.y = path[0].y;
+        const step = path[0];
+        game.monster.x = step.x;
+        game.monster.y = step.y;
     }
 
     game.monster.cooldown = game.monster.speed;
 
-    // Check collision
-    checkCollision();
+    // collision handled after both moves (see update())
 }
 
 // Handle player movement
 function movePlayer(dx, dy) {
     const now = Date.now();
-    if (now - game.lastMoveTime < game.moveDelay) return;
+    if (now - game.lastMoveTime < game.moveDelay) return; // debounce: stop extra moves
+    game.lastMoveTime = now;
 
     const newX = game.player.x + dx;
     const newY = game.player.y + dy;
 
-    if (isWalkable(newX, newY)) {
-        game.player.x = newX;
-        game.player.y = newY;
-        game.lastMoveTime = now;
+    if (!isWalkable(newX, newY, false)) return;
 
-        // Add to trail
-        game.playerTrail.push({x: newX, y: newY});
-        if (game.playerTrail.length > 50) game.playerTrail.shift();
+    // commit move
+    game.prevPlayer = { x: game.player.x, y: game.player.y }; // track previous for collision checks
+    game.player.x = newX;
+    game.player.y = newY;
 
-        // Check for key collection
-        for (const key of game.keys) {
-            if (!key.collected && key.x === newX && key.y === newY) {
-                key.collected = true;
-                game.keysCollected++;
-                updateHUD();
-            }
-        }
+    // update trail & interactions
+    game.playerTrail.unshift({ x: newX, y: newY });
+    if (game.playerTrail.length > 50) game.playerTrail.pop();
 
-        // Check win condition
-        if (newX === game.exit.x && newY === game.exit.y && game.keysCollected === 3) {
-            game.won = true;
-        }
-
-        // Check collision after move
-        checkCollision();
-    }
+    // key pickup, switches, spikes, etc. (ensure those handlers exist)
+    handleTileEnter(newX, newY);
 }
 
 // Check collision with monster
