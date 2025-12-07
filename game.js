@@ -1,72 +1,50 @@
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 
-const TILE_SIZE = 30;  // each tile is 30x30 pixels
-const N = 21;          // odd-size maze (walls on edges)
+const TILE_SIZE = 30;
+const N = 21;
 
 // Tile types
 const FLOOR = 0;
 const WALL = 1;
-const SPIKE = 2;
-const DOOR = 3;    // closed door
-const SWITCH = 4;
-const ROTBLOCK = 5;
-const SAFE = 6;      // safe zone (visual + monster can't enter)
+const SAFE = 2;
+const KEY = 3;
+const EXIT = 4;
 
 // Game state
 const game = {
     maze: [],
     player: { x: 1, y: 1 },
-    switches: [],
-    rotblocks: [],
     monster: null,
-    playerVisited: [],
+    keys: [],
+    keysCollected: 0,
+    exit: { x: N-2, y: N-2 },
+    safeZones: [],
     gameOver: false,
     won: false,
-    keys: {},
-    frameCount: 0,
-    monsterLearningLevel: 1,
-    respawn: null,        // respawn location
-    safeZones: [],        // list of safe tile coords (monster can't enter)
-    invulnFrames: 0       // short invulnerability after respawn
+    deaths: 0,
+    startTime: Date.now(),
+    lastMoveTime: 0,
+    moveDelay: 150,
+    playerTrail: [],
+    invulnFrames: 0
 };
 
-// Initialize game
-function init() {
-    generateMaze();
-    game.player = { x: 1, y: 1 };
-    game.gameOver = false;
-    game.won = false;
-    game.frameCount = 0;
-    game.switches = [];
-    game.rotblocks = [];                 // reset rotblocks
-    game.playerVisited = [];
-    game.prevPlayer = null;              // track for swap/crossing detection
-    game.prevMonster = null;
-    for (let y = 0; y < N; y++) {
-        game.playerVisited[y] = [];
-        for (let x = 0; x < N; x++) game.playerVisited[y][x] = 0;
-    }
+// Input handling with proper debouncing
+const input = {
+    keys: {},
+    lastMove: 0
+};
 
-    placeFeatures();   // doors, spikes, rotblocks, switches
-    placeMonster();
-}
-
-// Maze generation using recursive backtracking (odd cell maze)
+// Generate maze
 function generateMaze() {
-    game.maze = [];
-    for (let y = 0; y < N; y++) {
-        game.maze[y] = [];
-        for (let x = 0; x < N; x++) {
-            game.maze[y][x] = WALL; // walls
-        }
-    }
+    game.maze = Array.from({length: N}, () => Array(N).fill(WALL));
 
     function carve(x, y) {
         game.maze[y][x] = FLOOR;
-        const dirs = [[0,-2],[2,0],[0,2],[-2,0]].sort(()=>Math.random()-0.5);
-        for (const [dx,dy] of dirs) {
-            const nx = x+dx, ny = y+dy;
+        const dirs = [[0,-2],[2,0],[0,2],[-2,0]].sort(() => Math.random() - 0.5);
+        for (const [dx, dy] of dirs) {
+            const nx = x + dx, ny = y + dy;
             if (nx > 0 && nx < N-1 && ny > 0 && ny < N-1 && game.maze[ny][nx] === WALL) {
                 game.maze[y + dy/2][x + dx/2] = FLOOR;
                 carve(nx, ny);
@@ -74,441 +52,365 @@ function generateMaze() {
         }
     }
 
-    carve(1,1);
-    // Ensure exit
+    carve(1, 1);
     game.maze[N-2][N-2] = FLOOR;
+
+    // Widen some corridors for better gameplay
+    for (let i = 0; i < 30; i++) {
+        const x = Math.floor(Math.random() * (N-2)) + 1;
+        const y = Math.floor(Math.random() * (N-2)) + 1;
+        if (game.maze[y][x] === WALL) {
+            let floorNeighbors = 0;
+            [[0,1],[1,0],[0,-1],[-1,0]].forEach(([dx,dy]) => {
+                if (game.maze[y+dy]?.[x+dx] === FLOOR) floorNeighbors++;
+            });
+            if (floorNeighbors >= 2) game.maze[y][x] = FLOOR;
+        }
+    }
 }
 
-// place doors, spikes, rotblocks, and switches
-function placeFeatures() {
-    // place a few doors (closed), spikes corridors, rotblocks, and switches linked to effects
-    const candidates = [];
-    for (let y = 1; y < N-1; y++) for (let x = 1; x < N-1; x++)
-        if (game.maze[y][x] === FLOOR) candidates.push({x,y});
-
-    // place 1 door near exit corridor
-    const doorPos = candidates[Math.floor(Math.random()*candidates.length)];
-    game.maze[doorPos.y][doorPos.x] = DOOR;
-
-    // place a few spikes (off by default).
-    const spikePositions = [];
-    for (let i=0;i<6;i++){
-        const p = candidates[Math.floor(Math.random()*candidates.length)];
-        if (game.maze[p.y][p.x] === FLOOR) {
-            game.maze[p.y][p.x] = SPIKE;
-            spikePositions.push(p);
-        }
-    }
-
-    // place a few rotblocks (2x2 blocks that can be rotated)
-    // store rotblocks in game.rotblocks as {x,y,tiles:[[a,b],[c,d]]}
-    for (let i=0;i<3;i++){
-        const p = candidates[Math.floor(Math.random()*candidates.length)];
-        if (p.x < N-2 && p.y < N-2) {
-            // capture the current 2x2 tile types (or create a small pattern if walls)
-            const tx = p.x, ty = p.y;
-            const a = game.maze[ty][tx] === WALL ? FLOOR : game.maze[ty][tx];
-            const b = game.maze[ty][tx+1] === WALL ? WALL : game.maze[ty][tx+1];
-            const c = game.maze[ty+1][tx] === WALL ? WALL : game.maze[ty+1][tx];
-            const d = game.maze[ty+1][tx+1] === WALL ? FLOOR : game.maze[ty+1][tx+1];
-            const tiles = [[a,b],[c,d]];
-            game.rotblocks.push({x:tx, y:ty, tiles});
-            // write tiles back and mark anchor cell visually as ROTBLOCK
-            game.maze[ty][tx] = ROTBLOCK;          // anchor visible as R
-            game.maze[ty][tx+1] = tiles[0][1];
-            game.maze[ty+1][tx] = tiles[1][0];
-            game.maze[ty+1][tx+1] = tiles[1][1];
-        }
-    }
-
-    // Place switches - each switch gets a type and target
-    const switchTypes = ['rotate','door','spikes','reroute'];
-    for (let i=0;i<4;i++){
-        let p = candidates[Math.floor(Math.random()*candidates.length)];
-        // ensure not overriding door/spike/rotblock anchor (and also avoid non-floor)
-        if (!p || game.maze[p.y][p.x] !== FLOOR) {
-            i--; continue;
-        }
-        const type = switchTypes[i % switchTypes.length];
-        const sw = { x: p.x, y: p.y, type, active: false };
-        // link rotblock or door/spikes as needed
-        if (type === 'rotate') {
-            // pick a rotblock from game.rotblocks
-            if (game.rotblocks.length > 0) sw.target = game.rotblocks[i % game.rotblocks.length];
-            else { i--; continue; }
-        }
-        if (type === 'door') sw.target = doorPos;
-        if (type === 'spikes') sw.targets = spikePositions;
-        game.switches.push(sw);
-        game.maze[p.y][p.x] = SWITCH;
-    }
-
-    // pick a respawn tile near start (not too close to exit)
-    const startCandidates = candidates.filter(p => !(p.x === (N-2) && p.y === (N-2)) && !(p.x === game.player.x && p.y === game.player.y));
-    const resp = startCandidates[Math.floor(Math.random() * startCandidates.length)] || { x: 1, y: 1 };
-    game.respawn = { x: resp.x, y: resp.y };
-
-    // create a small safe zone (3x3) around respawn where monster won't enter
-    game.safeZones = [];
-    for (let sy = -1; sy <= 1; sy++) {
-        for (let sx = -1; sx <= 1; sx++) {
-            const rx = resp.x + sx, ry = resp.y + sy;
-            if (rx > 0 && rx < N-1 && ry > 0 && ry < N-1 && game.maze[ry][rx] !== WALL) {
-                game.safeZones.push({ x: rx, y: ry });
-                game.maze[ry][rx] = SAFE;
+// Place game elements
+function placeElements() {
+    const floors = [];
+    for (let y = 1; y < N-1; y++) {
+        for (let x = 1; x < N-1; x++) {
+            if (game.maze[y][x] === FLOOR) {
+                floors.push({x, y});
             }
         }
     }
 
-    // Ensure the door does not permanently block the only path to the exit:
-    if (!isReachable({x: game.player.x, y: game.player.y}, {x: N-2, y: N-2})) {
-        // If the maze is blocked with the closed door, open it (convert to FLOOR)
-        if (doorPos && game.maze[doorPos.y][doorPos.x] === DOOR) {
-            game.maze[doorPos.y][doorPos.x] = FLOOR;
+    // Place 3 keys scattered around the maze
+    game.keys = [];
+    for (let i = 0; i < 3; i++) {
+        let pos;
+        do {
+            pos = floors[Math.floor(Math.random() * floors.length)];
+        } while (game.keys.some(k => k.x === pos.x && k.y === pos.y) || 
+                 (pos.x < 5 && pos.y < 5) || // not near start
+                 (pos.x > N-5 && pos.y > N-5)); // not near exit
+        
+        game.keys.push({...pos, collected: false});
+    }
+
+    // Place 2-3 safe zones
+    game.safeZones = [];
+    for (let i = 0; i < 3; i++) {
+        const center = floors[Math.floor(Math.random() * floors.length)];
+        if (center.x < 5 && center.y < 5) continue; // not near start
+        
+        // Create 2x2 safe zone
+        for (let dy = 0; dy < 2; dy++) {
+            for (let dx = 0; dx < 2; dx++) {
+                const sx = center.x + dx, sy = center.y + dy;
+                if (sx < N && sy < N && game.maze[sy][sx] === FLOOR) {
+                    game.safeZones.push({x: sx, y: sy});
+                    game.maze[sy][sx] = SAFE;
+                }
+            }
         }
     }
 
-    // spike state map (true = spikes active)
-    game.spikesOn = false;
-}
-
-// Rotate a 2x2 block anchored at tx,ty clockwise (if within bounds)
-// Now operates on a rotblock object (reads/writes its tiles and the maze)
-function rotate2x2(tx, ty) {
-    // find rotblock by anchor
-    const rb = game.rotblocks.find(r => r.x === tx && r.y === ty);
-    if (!rb) return;
-    const t = rb.tiles;
-    // rotate clockwise: new = [[c,a],[d,b]]
-    const newTiles = [
-        [t[1][0], t[0][0]],
-        [t[1][1], t[0][1]]
-    ];
-    rb.tiles = newTiles;
-    // write back to maze: keep anchor cell as ROTBLOCK for visibility
-    game.maze[ty][tx] = ROTBLOCK;
-    game.maze[ty][tx+1] = newTiles[0][1];
-    game.maze[ty+1][tx] = newTiles[1][0];
-    game.maze[ty+1][tx+1] = newTiles[1][1];
-}
-
-// Simple reroute: carve a short corridor from random wall near switch
-function rerouteNear(sx, sy) {
-    const directionCandidates = [[0,-1],[1,0],[0,1],[-1,0]];
-    for (const [dx,dy] of directionCandidates) {
-        const x = sx + dx*2, y = sy + dy*2;
-        if (x>0 && x<N-1 && y>0 && y<N-1 && game.maze[y][x] === WALL) {
-            game.maze[sy+dy][sx+dx] = FLOOR;
-            game.maze[y][x] = FLOOR;
-            return;
-        }
-    }
-}
-
-// place monster and memory grid
-function placeMonster() {
-    // find a floor tile far from player
-    let mpos = {x: N-2, y: 1};
+    // Place monster far from player
+    let monsterPos = {x: N-3, y: 1};
     game.monster = {
-        x: mpos.x,
-        y: mpos.y,
-        moveCooldown: 0,
-        baseCooldownFrames: 40, // lower = faster
-        learningFactor: 1.0
+        x: monsterPos.x,
+        y: monsterPos.y,
+        cooldown: 0,
+        speed: 8 // moves every 8 frames
     };
+
+    game.playerTrail = [];
 }
 
-// Game loop
-function gameLoop() {
-    update();
-    draw();
-    requestAnimationFrame(gameLoop);
+// Initialize game
+function init() {
+    generateMaze();
+    game.player = {x: 1, y: 1};
+    game.keysCollected = 0;
+    game.gameOver = false;
+    game.won = false;
+    game.deaths = 0;
+    game.startTime = Date.now();
+    game.invulnFrames = 0;
+    placeElements();
+    updateHUD();
 }
 
-function update() {
-    if (game.gameOver || game.won) return;
-    game.frameCount++;
+// Check if position is walkable
+function isWalkable(x, y, isMonster = false) {
+    if (x < 0 || x >= N || y < 0 || y >= N) return false;
+    const tile = game.maze[y][x];
+    if (tile === WALL) return false;
+    if (isMonster && tile === SAFE) return false; // monster can't enter safe zones
+    return true;
+}
 
-    if (game.invulnFrames > 0) game.invulnFrames--;
+// BFS pathfinding
+function findPath(from, to, isMonster = false) {
+    const queue = [{...from, path: []}];
+    const visited = Array.from({length: N}, () => Array(N).fill(false));
+    visited[from.y][from.x] = true;
 
-    // record previous player position for crossing/swap detection
-    game.prevPlayer = { x: game.player.x, y: game.player.y };
+    while (queue.length > 0) {
+        const current = queue.shift();
+        
+        if (current.x === to.x && current.y === to.y) {
+            return current.path;
+        }
 
-    // Handle player movement (single-tile per keypress)
-    let newX = game.player.x;
-    let newY = game.player.y;
+        for (const [dx, dy] of [[0,-1],[1,0],[0,1],[-1,0]]) {
+            const nx = current.x + dx, ny = current.y + dy;
+            if (isWalkable(nx, ny, isMonster) && !visited[ny][nx]) {
+                visited[ny][nx] = true;
+                queue.push({
+                    x: nx, 
+                    y: ny, 
+                    path: [...current.path, {x: nx, y: ny}]
+                });
+            }
+        }
+    }
+    return null;
+}
 
-    if (game.keys['ArrowUp'] || game.keys['w'] || game.keys['W']) newY--;
-    if (game.keys['ArrowDown'] || game.keys['s'] || game.keys['S']) newY++;
-    if (game.keys['ArrowLeft'] || game.keys['a'] || game.keys['A']) newX--;
-    if (game.keys['ArrowRight'] || game.keys['d'] || game.keys['D']) newX++;
+// Monster AI - follows player trail with some intelligence
+function updateMonster() {
+    if (game.monster.cooldown > 0) {
+        game.monster.cooldown--;
+        return;
+    }
+
+    // Target: most recent player position in trail, or player directly
+    let target = game.player;
+    
+    // If player has left a trail, follow the "scent"
+    if (game.playerTrail.length > 5) {
+        const recentTrail = game.playerTrail.slice(-10);
+        // Find closest trail point to monster
+        let closest = null;
+        let minDist = Infinity;
+        for (const pos of recentTrail) {
+            const dist = Math.abs(pos.x - game.monster.x) + Math.abs(pos.y - game.monster.y);
+            if (dist < minDist) {
+                minDist = dist;
+                closest = pos;
+            }
+        }
+        if (closest) target = closest;
+    }
+
+    const path = findPath(game.monster, target, true);
+    if (path && path.length > 0) {
+        game.monster.x = path[0].x;
+        game.monster.y = path[0].y;
+    }
+
+    game.monster.cooldown = game.monster.speed;
+
+    // Check collision
+    checkCollision();
+}
+
+// Handle player movement
+function movePlayer(dx, dy) {
+    const now = Date.now();
+    if (now - game.lastMoveTime < game.moveDelay) return;
+
+    const newX = game.player.x + dx;
+    const newY = game.player.y + dy;
 
     if (isWalkable(newX, newY)) {
         game.player.x = newX;
         game.player.y = newY;
+        game.lastMoveTime = now;
 
-        // mark visited for monster learning
-        game.playerVisited[newY][newX] = (game.playerVisited[newY][newX] || 0) + 1;
+        // Add to trail
+        game.playerTrail.push({x: newX, y: newY});
+        if (game.playerTrail.length > 50) game.playerTrail.shift();
 
-        // stepping on switch?
-        const sw = game.switches.find(s => s.x === newX && s.y === newY);
-        if (sw && !sw.active) {
-            activateSwitch(sw);
-        }
-
-        // stepping on spike kills player if spikes are active
-        if (game.maze[newY][newX] === SPIKE && game.spikesOn) {
-            onPlayerDeath();
-            return;
-        }
-    }
-
-    // Check win condition (reach exit)
-    if (game.player.x === N - 2 && game.player.y === N - 2) {
-        game.won = true;
-    }
-
-    // Update monster (moves toward the most-visited tiles / learns player paths)
-    updateMonster();
-
-    // Collision detection after both moves:
-    if (game.monster) {
-        if (game.invulnFrames <= 0) {
-            // direct collision
-            if (game.player.x === game.monster.x && game.player.y === game.monster.y) {
-                onPlayerDeath();
-                return;
-            }
-            // crossing / swap detection
-            if (game.prevPlayer && game.prevMonster) {
-                const swapped = game.player.x === game.prevMonster.x && game.player.y === game.prevMonster.y
-                             && game.monster.x === game.prevPlayer.x && game.monster.y === game.prevPlayer.y;
-                if (swapped) { onPlayerDeath(); return; }
-            }
-            if (game.prevMonster && game.player.x === game.prevMonster.x && game.player.y === game.prevMonster.y) {
-                onPlayerDeath(); return;
+        // Check for key collection
+        for (const key of game.keys) {
+            if (!key.collected && key.x === newX && key.y === newY) {
+                key.collected = true;
+                game.keysCollected++;
+                updateHUD();
             }
         }
+
+        // Check win condition
+        if (newX === game.exit.x && newY === game.exit.y && game.keysCollected === 3) {
+            game.won = true;
+        }
+
+        // Check collision after move
+        checkCollision();
     }
 }
 
-// isWalkable for player (doors closed are not walkable; spikes are walkable but may kill)
-function isWalkable(x, y) {
-    if (x < 0 || x >= N || y < 0 || y >= N) return false;
-    const t = game.maze[y][x];
-    if (t === WALL) return false;
-    if (t === DOOR) return false;
-    // SAFE is walkable for player
-    return true;
-}
-
-// Monster BFS and movement: treat SAFE as blocked for monster
-function monsterNextStepTowards(tx, ty) {
-    const q = [];
-    const visited = Array.from({length:N}, ()=>Array(N).fill(false));
-    const parent = Array.from({length:N}, ()=>Array(N).fill(null));
-    q.push({x: game.monster.x, y: game.monster.y});
-    visited[game.monster.y][game.monster.x] = true;
-
-    const dirs = [[0,-1],[1,0],[0,1],[-1,0]];
-    while(q.length){
-        const cur = q.shift();
-        if (cur.x === tx && cur.y === ty) break;
-        for (const [dx,dy] of dirs) {
-            const nx = cur.x+dx, ny = cur.y+dy;
-            if (nx<0||nx>=N||ny<0||ny>=N) continue;
-            if (visited[ny][nx]) continue;
-            const tile = game.maze[ny][nx];
-            // monster cannot enter WALL, DOOR or SAFE
-            if (tile === WALL || tile === DOOR || tile === SAFE) continue;
-            visited[ny][nx]=true;
-            parent[ny][nx] = cur;
-            q.push({x:nx,y:ny});
-        }
-    }
-
-    if (!visited[ty][tx]) return null;
-    let cur = {x: tx, y: ty};
-    while(parent[cur.y][cur.x] && !(parent[cur.y][cur.x].x === game.monster.x && parent[cur.y][cur.x].y === game.monster.y)) {
-        cur = parent[cur.y][cur.x];
-    }
-    return cur;
-}
-
-function updateMonster() {
-    const m = game.monster;
-    if (!m) return;
-    // record previous monster position for swap detection
-    game.prevMonster = { x: m.x, y: m.y };
-
-    if (m.moveCooldown > 0) { m.moveCooldown--; return; }
-
-    // determine target based on learned heat
-    const target = findMonsterTarget();
-    const next = monsterNextStepTowards(target.x, target.y) || monsterNextStepTowards(game.player.x, game.player.y);
-
-    if (next) {
-        m.x = next.x;
-        m.y = next.y;
-    } else {
-        // random small patrol if no path
-        const dirs = [[0,-1],[1,0],[0,1],[-1,0]].sort(()=>Math.random()-0.5);
-        for (const [dx,dy] of dirs) {
-            const nx = m.x+dx, ny = m.y+dy;
-            if (nx>0 && nx<N-1 && ny>0 && ny<N-1 && game.maze[ny][nx] !== WALL && game.maze[ny][nx] !== DOOR) {
-                m.x = nx; m.y = ny; break;
-            }
-        }
-    }
-
-    // collision with player? (also handled after update)
-    if (m.x === game.player.x && m.y === game.player.y) {
-        onPlayerDeath();
+// Check collision with monster
+function checkCollision() {
+    if (game.invulnFrames > 0) {
+        game.invulnFrames--;
         return;
     }
 
-    // set cooldown frames influenced by learning level (monster gets faster as it learns)
-    const speedFactor = Math.max(0.3, 1 - 0.1 * (game.monsterLearningLevel-1));
-    m.moveCooldown = Math.floor(m.baseCooldownFrames * speedFactor);
+    if (game.player.x === game.monster.x && game.player.y === game.monster.y) {
+        game.deaths++;
+        updateHUD();
+        respawnPlayer();
+    }
 }
 
-function onPlayerDeath() {
-    // increment monster learning but respawn player instead of full game over
-    game.monsterLearningLevel = Math.min(10, game.monsterLearningLevel + 1);
+// Respawn player at start with brief invulnerability
+function respawnPlayer() {
+    game.player.x = 1;
+    game.player.y = 1;
+    game.invulnFrames = 30; // 0.5 second immunity
+    game.playerTrail = [];
+}
 
-    // respawn at respawn point (if exists), give short invulnerability
-    if (game.respawn) {
-        game.player.x = game.respawn.x;
-        game.player.y = game.respawn.y;
-        game.invulnFrames = 60; // ~1 second at 60fps
-        return;
+// Update HUD
+function updateHUD() {
+    document.getElementById('keyCount').textContent = game.keysCollected;
+    document.getElementById('deathCount').textContent = game.deaths;
+    const elapsed = Math.floor((Date.now() - game.startTime) / 1000);
+    document.getElementById('timeCount').textContent = elapsed;
+}
+
+// Game loop
+let frameCount = 0;
+function gameLoop() {
+    if (!game.gameOver && !game.won) {
+        // Handle input
+        if (input.keys['ArrowUp'] || input.keys['w'] || input.keys['W']) movePlayer(0, -1);
+        if (input.keys['ArrowDown'] || input.keys['s'] || input.keys['S']) movePlayer(0, 1);
+        if (input.keys['ArrowLeft'] || input.keys['a'] || input.keys['A']) movePlayer(-1, 0);
+        if (input.keys['ArrowRight'] || input.keys['d'] || input.keys['D']) movePlayer(1, 0);
+
+        // Update monster
+        frameCount++;
+        if (frameCount % 2 === 0) updateMonster();
+
+        updateHUD();
     }
 
-    // fallback to game over
-    game.gameOver = true;
+    draw();
+    requestAnimationFrame(gameLoop);
 }
 
-// Drawing
+// Draw game
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw maze tiles
+    // Draw maze
     for (let y = 0; y < N; y++) {
         for (let x = 0; x < N; x++) {
-            const t = game.maze[y][x];
+            const tile = game.maze[y][x];
             const px = x * TILE_SIZE, py = y * TILE_SIZE;
-            // base floor
-            if (t === WALL) {
-                ctx.fillStyle = "#444";
+
+            if (tile === WALL) {
+                ctx.fillStyle = "#2d3561";
                 ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                ctx.strokeStyle = "#1a1f3a";
+                ctx.strokeRect(px, py, TILE_SIZE, TILE_SIZE);
+            } else if (tile === SAFE) {
+                ctx.fillStyle = "#1a4d2e";
+                ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                ctx.fillStyle = "#2d8659";
+                ctx.fillRect(px + 3, py + 3, TILE_SIZE - 6, TILE_SIZE - 6);
             } else {
-                ctx.fillStyle = "#222";
+                ctx.fillStyle = "#0f0f1e";
                 ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                ctx.strokeStyle = "#1a1a2e";
+                ctx.strokeRect(px, py, TILE_SIZE, TILE_SIZE);
             }
-
-            // overlays / icons
-            ctx.font = `${TILE_SIZE - 8}px serif`;
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            if (t === SPIKE) {
-                ctx.fillStyle = game.spikesOn ? "#a00" : "#553";
-                ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
-                ctx.fillStyle = "#fff";
-                ctx.fillText("⚠️", px + TILE_SIZE/2, py + TILE_SIZE/2);
-            } else if (t === DOOR) {
-                ctx.fillStyle = "#7a3";
-                ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
-                ctx.fillStyle = "#000";
-                ctx.fillText("🔒", px + TILE_SIZE/2, py + TILE_SIZE/2);
-            } else if (t === SWITCH) {
-                ctx.fillStyle = "#0af";
-                ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
-                ctx.fillStyle = "#000";
-                ctx.fillText("🔘", px + TILE_SIZE/2, py + TILE_SIZE/2);
-            } else if (t === ROTBLOCK) {
-                ctx.fillStyle = "#b68";
-                ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
-                ctx.fillStyle = "#000";
-                ctx.fillText("🔁", px + TILE_SIZE/2, py + TILE_SIZE/2);
-            } else if (t === SAFE) {
-                ctx.fillStyle = "#2d6";
-                ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
-                ctx.fillStyle = "#000";
-                ctx.fillText("🛡️", px + TILE_SIZE/2, py + TILE_SIZE/2);
-            }
-
-            ctx.strokeStyle = "#111";
-            ctx.strokeRect(px, py, TILE_SIZE, TILE_SIZE);
         }
     }
 
-    // draw switches with active state (small overlay)
-    for (const sw of game.switches) {
-        ctx.fillStyle = sw.active ? "#ff0" : "#0ff";
-        ctx.fillRect(sw.x * TILE_SIZE + 6, sw.y * TILE_SIZE + 6, TILE_SIZE - 12, TILE_SIZE - 12);
+    // Draw player trail (fading)
+    for (let i = 0; i < game.playerTrail.length; i++) {
+        const pos = game.playerTrail[i];
+        const alpha = (i / game.playerTrail.length) * 0.3;
+        ctx.fillStyle = `rgba(0, 255, 255, ${alpha})`;
+        ctx.fillRect(pos.x * TILE_SIZE + 10, pos.y * TILE_SIZE + 10, 10, 10);
     }
 
-    // Draw respawn icon
-    if (game.respawn) {
-        ctx.fillStyle = "#fff";
-        ctx.font = `${TILE_SIZE - 12}px serif`;
-        ctx.fillText("🔁", game.respawn.x * TILE_SIZE + TILE_SIZE/2, game.respawn.y * TILE_SIZE + TILE_SIZE/2);
+    // Draw keys
+    for (const key of game.keys) {
+        if (!key.collected) {
+            ctx.fillStyle = "#ffd700";
+            ctx.beginPath();
+            ctx.arc(key.x * TILE_SIZE + TILE_SIZE/2, key.y * TILE_SIZE + TILE_SIZE/2, 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "#ffed4e";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
     }
 
     // Draw exit
-    ctx.fillStyle = "#0f0";
-    ctx.fillRect((N - 2) * TILE_SIZE + 5, (N - 2) * TILE_SIZE + 5, TILE_SIZE - 10, TILE_SIZE - 10);
-    ctx.fillStyle = "#000";
-    ctx.fillText("⛳", (N - 2) * TILE_SIZE + TILE_SIZE/2, (N - 2) * TILE_SIZE + TILE_SIZE/2);
+    const exitColor = game.keysCollected === 3 ? "#00ff00" : "#ff4444";
+    ctx.fillStyle = exitColor;
+    ctx.fillRect(game.exit.x * TILE_SIZE + 5, game.exit.y * TILE_SIZE + 5, TILE_SIZE - 10, TILE_SIZE - 10);
+    ctx.strokeStyle = game.keysCollected === 3 ? "#00aa00" : "#aa0000";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(game.exit.x * TILE_SIZE + 5, game.exit.y * TILE_SIZE + 5, TILE_SIZE - 10, TILE_SIZE - 10);
 
-    // Draw player (invulnerable flash)
-    ctx.fillStyle = game.invulnFrames > 0 ? "#88ffff" : "#0ff";
-    ctx.beginPath();
-    ctx.arc(game.player.x * TILE_SIZE + TILE_SIZE / 2, game.player.y * TILE_SIZE + TILE_SIZE / 2, TILE_SIZE / 3, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Draw monster (red)
-    if (game.monster) {
-        ctx.fillStyle = "#f00";
-        ctx.fillRect(game.monster.x * TILE_SIZE + 4, game.monster.y * TILE_SIZE + 4, TILE_SIZE - 8, TILE_SIZE - 8);
+    // Draw player
+    const playerFlash = game.invulnFrames > 0 && frameCount % 4 < 2;
+    if (!playerFlash) {
+        ctx.fillStyle = "#00ffff";
+        ctx.beginPath();
+        ctx.arc(game.player.x * TILE_SIZE + TILE_SIZE/2, 
+               game.player.y * TILE_SIZE + TILE_SIZE/2, 
+               TILE_SIZE/3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#00aaaa";
+        ctx.lineWidth = 2;
+        ctx.stroke();
     }
 
-    // HUD (short)
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 14px Arial";
-    ctx.textAlign = "left";
-    ctx.fillText("Spikes: " + (game.spikesOn ? "ON" : "OFF") + "   Monster level: " + game.monsterLearningLevel, 10, 18);
+    // Draw monster
+    ctx.fillStyle = "#ff0000";
+    ctx.fillRect(game.monster.x * TILE_SIZE + 6, game.monster.y * TILE_SIZE + 6, 
+                TILE_SIZE - 12, TILE_SIZE - 12);
+    ctx.strokeStyle = "#aa0000";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(game.monster.x * TILE_SIZE + 6, game.monster.y * TILE_SIZE + 6, 
+                  TILE_SIZE - 12, TILE_SIZE - 12);
 
-    if (game.gameOver) {
-        ctx.fillStyle = "#f00";
-        ctx.font = "bold 32px Arial";
+    // Draw game over / win screens
+    if (game.won) {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.fillStyle = "#00ff00";
+        ctx.font = "bold 48px Arial";
         ctx.textAlign = "center";
-        ctx.fillText("YOU DIED", canvas.width / 2, canvas.height / 2);
-        ctx.font = "16px Arial";
-        ctx.fillText("Press R to restart", canvas.width / 2, canvas.height / 2 + 40);
-    } else if (game.won) {
-        ctx.fillStyle = "#0f0";
-        ctx.font = "bold 32px Arial";
-        ctx.textAlign = "center";
-        ctx.fillText("YOU WON!", canvas.width / 2, canvas.height / 2);
-        ctx.font = "16px Arial";
-        ctx.fillText("Press R to restart", canvas.width / 2, canvas.height / 2 + 40);
+        ctx.fillText("YOU ESCAPED!", canvas.width/2, canvas.height/2 - 20);
+        
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "20px Arial";
+        const time = Math.floor((Date.now() - game.startTime) / 1000);
+        ctx.fillText(`Time: ${time}s | Deaths: ${game.deaths}`, canvas.width/2, canvas.height/2 + 30);
+        ctx.fillText("Press R to restart", canvas.width/2, canvas.height/2 + 70);
     }
 }
 
-// Keyboard controls
-document.addEventListener("keydown", (e) => {
-    game.keys[e.key] = true;
-
+// Input handlers
+document.addEventListener('keydown', (e) => {
+    input.keys[e.key] = true;
+    
     if (e.key === 'r' || e.key === 'R') {
         init();
     }
 });
 
-document.addEventListener("keyup", (e) => {
-    game.keys[e.key] = false;
+document.addEventListener('keyup', (e) => {
+    input.keys[e.key] = false;
 });
 
-// Start the game
+// Start game
 init();
 gameLoop();
