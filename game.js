@@ -60,9 +60,9 @@ function carvePath(x, y) {
     }
 }
 
-// Create moving obstacles
+// Create moving obstacles with slower speed and synchronized timing
 function createEnemies() {
-    // Horizontal moving block
+    // Horizontal moving block - slower speed (0.3), longer cycle
     game.enemies.push({
         x: 5,
         y: 5,
@@ -72,10 +72,11 @@ function createEnemies() {
         maxX: 15,
         minY: 5,
         maxY: 5,
-        speed: 1
+        speed: 0.3,
+        startFrame: 0  // starts immediately
     });
     
-    // Vertical moving block
+    // Vertical moving block - slower speed (0.3), offset timing
     game.enemies.push({
         x: 15,
         y: 10,
@@ -85,10 +86,11 @@ function createEnemies() {
         maxX: 15,
         minY: 8,
         maxY: 15,
-        speed: 1
+        speed: 0.3,
+        startFrame: 30  // delayed start for timing window
     });
     
-    // Another horizontal block
+    // Another horizontal block - slower speed (0.25), different timing
     game.enemies.push({
         x: 10,
         y: 15,
@@ -98,7 +100,8 @@ function createEnemies() {
         maxX: 17,
         minY: 15,
         maxY: 15,
-        speed: 1
+        speed: 0.25,
+        startFrame: 60  // another delayed start
     });
 }
 
@@ -146,6 +149,11 @@ function update() {
 }
 
 function updateEnemy(enemy) {
+    // Only move if enough frames have passed since start
+    if (game.frameCount < enemy.startFrame) {
+        return;
+    }
+    
     let nextX = enemy.x + enemy.dirX * enemy.speed;
     let nextY = enemy.y + enemy.dirY * enemy.speed;
     
