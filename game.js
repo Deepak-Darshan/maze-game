@@ -157,14 +157,20 @@ function updateEnemy(enemy) {
     let nextX = enemy.x + enemy.dirX * enemy.speed;
     let nextY = enemy.y + enemy.dirY * enemy.speed;
     
+    // Check if next position is walkable (not a wall)
+    if (!isWalkable(Math.round(nextX), Math.round(nextY))) {
+        // Bounce off walls
+        enemy.dirX *= -1;
+        enemy.dirY *= -1;
+        return;
+    }
+    
     // Bounce off boundaries
     if (nextX < enemy.minX || nextX > enemy.maxX) {
         enemy.dirX *= -1;
-        nextX = enemy.x + enemy.dirX * enemy.speed;
     }
     if (nextY < enemy.minY || nextY > enemy.maxY) {
         enemy.dirY *= -1;
-        nextY = enemy.y + enemy.dirY * enemy.speed;
     }
     
     enemy.x = nextX;
