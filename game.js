@@ -11,20 +11,24 @@ const SPIKE = 2;
 const DOOR = 3;    // closed door
 const SWITCH = 4;
 const ROTBLOCK = 5;
+const SAFE = 6;      // safe zone (visual + monster can't enter)
 
 // Game state
 const game = {
     maze: [],
     player: { x: 1, y: 1 },
     switches: [],
-    rotblocks: [],        // <-- added: store rotblock data/anchors
+    rotblocks: [],
     monster: null,
-    playerVisited: [],     // counts of visits per tile (used by monster learning)
+    playerVisited: [],
     gameOver: false,
     won: false,
     keys: {},
     frameCount: 0,
-    monsterLearningLevel: 1 // increases after each player death
+    monsterLearningLevel: 1,
+    respawn: null,        // respawn location
+    safeZones: [],        // list of safe tile coords (monster can't enter)
+    invulnFrames: 0       // short invulnerability after respawn
 };
 
 // Initialize game
@@ -139,6 +143,31 @@ function placeFeatures() {
         game.maze[p.y][p.x] = SWITCH;
     }
 
+    // pick a respawn tile near start (not too close to exit)
+    const startCandidates = candidates.filter(p => !(p.x === (N-2) && p.y === (N-2)) && !(p.x === game.player.x && p.y === game.player.y));
+    const resp = startCandidates[Math.floor(Math.random() * startCandidates.length)] || { x: 1, y: 1 };
+    game.respawn = { x: resp.x, y: resp.y };
+
+    // create a small safe zone (3x3) around respawn where monster won't enter
+    game.safeZones = [];
+    for (let sy = -1; sy <= 1; sy++) {
+        for (let sx = -1; sx <= 1; sx++) {
+            const rx = resp.x + sx, ry = resp.y + sy;
+            if (rx > 0 && rx < N-1 && ry > 0 && ry < N-1 && game.maze[ry][rx] !== WALL) {
+                game.safeZones.push({ x: rx, y: ry });
+                game.maze[ry][rx] = SAFE;
+            }
+        }
+    }
+
+    // Ensure the door does not permanently block the only path to the exit:
+    if (!isReachable({x: game.player.x, y: game.player.y}, {x: N-2, y: N-2})) {
+        // If the maze is blocked with the closed door, open it (convert to FLOOR)
+        if (doorPos && game.maze[doorPos.y][doorPos.x] === DOOR) {
+            game.maze[doorPos.y][doorPos.x] = FLOOR;
+        }
+    }
+
     // spike state map (true = spikes active)
     game.spikesOn = false;
 }
@@ -200,6 +229,8 @@ function update() {
     if (game.gameOver || game.won) return;
     game.frameCount++;
 
+    if (game.invulnFrames > 0) game.invulnFrames--;
+
     // record previous player position for crossing/swap detection
     game.prevPlayer = { x: game.player.x, y: game.player.y };
 
@@ -242,24 +273,21 @@ function update() {
 
     // Collision detection after both moves:
     if (game.monster) {
-        // direct collision
-        if (game.player.x === game.monster.x && game.player.y === game.monster.y) {
-            onPlayerDeath();
-            return;
-        }
-        // crossing / swap detection (player and monster swapped tiles between frames)
-        if (game.prevPlayer && game.prevMonster) {
-            const swapped = game.player.x === game.prevMonster.x && game.player.y === game.prevMonster.y
-                         && game.monster.x === game.prevPlayer.x && game.monster.y === game.prevPlayer.y;
-            if (swapped) {
+        if (game.invulnFrames <= 0) {
+            // direct collision
+            if (game.player.x === game.monster.x && game.player.y === game.monster.y) {
                 onPlayerDeath();
                 return;
             }
-        }
-        // also handle case where player moved through tile just vacated by monster (player passed quickly)
-        if (game.prevMonster && game.player.x === game.prevMonster.x && game.player.y === game.prevMonster.y) {
-            onPlayerDeath();
-            return;
+            // crossing / swap detection
+            if (game.prevPlayer && game.prevMonster) {
+                const swapped = game.player.x === game.prevMonster.x && game.player.y === game.prevMonster.y
+                             && game.monster.x === game.prevPlayer.x && game.monster.y === game.prevPlayer.y;
+                if (swapped) { onPlayerDeath(); return; }
+            }
+            if (game.prevMonster && game.player.x === game.prevMonster.x && game.player.y === game.prevMonster.y) {
+                onPlayerDeath(); return;
+            }
         }
     }
 }
@@ -270,27 +298,11 @@ function isWalkable(x, y) {
     const t = game.maze[y][x];
     if (t === WALL) return false;
     if (t === DOOR) return false;
-    // SPIKE and other non-wall tiles are walkable (spikes may kill depending on spikesOn)
+    // SAFE is walkable for player
     return true;
 }
 
-// Monster pathfinding: choose target tile = highest heat (playerVisited * learning factor) and BFS towards it
-function findMonsterTarget() {
-    let best = null;
-    let bestScore = 0;
-    for (let y=0;y<N;y++){
-        for (let x=0;x<N;x++){
-            const heat = game.playerVisited[y][x] || 0;
-            const score = heat * game.monsterLearningLevel;
-            if (score > bestScore) { bestScore = score; best = {x,y}; }
-        }
-    }
-    // fallback: chase player directly
-    if (!best || bestScore === 0) return {x: game.player.x, y: game.player.y};
-    return best;
-}
-
-// BFS to compute next step toward target (grid moves 4-way), monster ignores spikes (immune)
+// Monster BFS and movement: treat SAFE as blocked for monster
 function monsterNextStepTowards(tx, ty) {
     const q = [];
     const visited = Array.from({length:N}, ()=>Array(N).fill(false));
@@ -307,20 +319,19 @@ function monsterNextStepTowards(tx, ty) {
             if (nx<0||nx>=N||ny<0||ny>=N) continue;
             if (visited[ny][nx]) continue;
             const tile = game.maze[ny][nx];
-            if (tile === WALL || tile === DOOR) continue; // monster respects walls/doors
+            // monster cannot enter WALL, DOOR or SAFE
+            if (tile === WALL || tile === DOOR || tile === SAFE) continue;
             visited[ny][nx]=true;
             parent[ny][nx] = cur;
             q.push({x:nx,y:ny});
         }
     }
 
-    // backtrack from target to monster to get next step
-    if (!visited[ty][tx]) return null; // unreachable
+    if (!visited[ty][tx]) return null;
     let cur = {x: tx, y: ty};
     while(parent[cur.y][cur.x] && !(parent[cur.y][cur.x].x === game.monster.x && parent[cur.y][cur.x].y === game.monster.y)) {
         cur = parent[cur.y][cur.x];
     }
-    // cur now is the next step (or the target if adjacent)
     return cur;
 }
 
@@ -362,9 +373,19 @@ function updateMonster() {
 }
 
 function onPlayerDeath() {
-    game.gameOver = true;
-    // monster learns: increase learning level so it weights visited tiles more and speeds up
+    // increment monster learning but respawn player instead of full game over
     game.monsterLearningLevel = Math.min(10, game.monsterLearningLevel + 1);
+
+    // respawn at respawn point (if exists), give short invulnerability
+    if (game.respawn) {
+        game.player.x = game.respawn.x;
+        game.player.y = game.respawn.y;
+        game.invulnFrames = 60; // ~1 second at 60fps
+        return;
+    }
+
+    // fallback to game over
+    game.gameOver = true;
 }
 
 // Drawing
@@ -376,52 +397,72 @@ function draw() {
         for (let x = 0; x < N; x++) {
             const t = game.maze[y][x];
             const px = x * TILE_SIZE, py = y * TILE_SIZE;
+            // base floor
             if (t === WALL) {
                 ctx.fillStyle = "#444";
                 ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
-            } else if (t === FLOOR) {
+            } else {
                 ctx.fillStyle = "#222";
                 ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
-            } else if (t === SPIKE) {
+            }
+
+            // overlays / icons
+            ctx.font = `${TILE_SIZE - 8}px serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            if (t === SPIKE) {
                 ctx.fillStyle = game.spikesOn ? "#a00" : "#553";
                 ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
-                if (game.spikesOn) {
-                    ctx.fillStyle = "#000";
-                    ctx.fillRect(px+6, py+6, TILE_SIZE-12, TILE_SIZE-12);
-                }
+                ctx.fillStyle = "#fff";
+                ctx.fillText("⚠️", px + TILE_SIZE/2, py + TILE_SIZE/2);
             } else if (t === DOOR) {
                 ctx.fillStyle = "#7a3";
                 ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
                 ctx.fillStyle = "#000";
-                ctx.fillText("D", px+TILE_SIZE/2-4, py+TILE_SIZE/2+6);
+                ctx.fillText("🔒", px + TILE_SIZE/2, py + TILE_SIZE/2);
             } else if (t === SWITCH) {
                 ctx.fillStyle = "#0af";
                 ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
                 ctx.fillStyle = "#000";
-                ctx.fillText("S", px+TILE_SIZE/2-4, py+TILE_SIZE/2+6);
+                ctx.fillText("🔘", px + TILE_SIZE/2, py + TILE_SIZE/2);
             } else if (t === ROTBLOCK) {
                 ctx.fillStyle = "#b68";
                 ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
                 ctx.fillStyle = "#000";
-                ctx.fillText("R", px+TILE_SIZE/2-4, py+TILE_SIZE/2+6);
+                ctx.fillText("🔁", px + TILE_SIZE/2, py + TILE_SIZE/2);
+            } else if (t === SAFE) {
+                ctx.fillStyle = "#2d6";
+                ctx.fillRect(px, py, TILE_SIZE, TILE_SIZE);
+                ctx.fillStyle = "#000";
+                ctx.fillText("🛡️", px + TILE_SIZE/2, py + TILE_SIZE/2);
             }
+
             ctx.strokeStyle = "#111";
             ctx.strokeRect(px, py, TILE_SIZE, TILE_SIZE);
         }
     }
 
-    // draw switches with active state
+    // draw switches with active state (small overlay)
     for (const sw of game.switches) {
         ctx.fillStyle = sw.active ? "#ff0" : "#0ff";
         ctx.fillRect(sw.x * TILE_SIZE + 6, sw.y * TILE_SIZE + 6, TILE_SIZE - 12, TILE_SIZE - 12);
     }
 
+    // Draw respawn icon
+    if (game.respawn) {
+        ctx.fillStyle = "#fff";
+        ctx.font = `${TILE_SIZE - 12}px serif`;
+        ctx.fillText("🔁", game.respawn.x * TILE_SIZE + TILE_SIZE/2, game.respawn.y * TILE_SIZE + TILE_SIZE/2);
+    }
+
     // Draw exit
     ctx.fillStyle = "#0f0";
     ctx.fillRect((N - 2) * TILE_SIZE + 5, (N - 2) * TILE_SIZE + 5, TILE_SIZE - 10, TILE_SIZE - 10);
+    ctx.fillStyle = "#000";
+    ctx.fillText("⛳", (N - 2) * TILE_SIZE + TILE_SIZE/2, (N - 2) * TILE_SIZE + TILE_SIZE/2);
 
-    // Draw player
-    ctx.fillStyle = "#0ff";
+    // Draw player (invulnerable flash)
+    ctx.fillStyle = game.invulnFrames > 0 ? "#88ffff" : "#0ff";
     ctx.beginPath();
     ctx.arc(game.player.x * TILE_SIZE + TILE_SIZE / 2, game.player.y * TILE_SIZE + TILE_SIZE / 2, TILE_SIZE / 3, 0, Math.PI * 2);
     ctx.fill();
@@ -432,7 +473,7 @@ function draw() {
         ctx.fillRect(game.monster.x * TILE_SIZE + 4, game.monster.y * TILE_SIZE + 4, TILE_SIZE - 8, TILE_SIZE - 8);
     }
 
-    // HUD
+    // HUD (short)
     ctx.fillStyle = "#fff";
     ctx.font = "bold 14px Arial";
     ctx.textAlign = "left";
