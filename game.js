@@ -17,6 +17,7 @@ const game = {
     maze: [],
     player: { x: 1, y: 1 },
     switches: [],
+    rotblocks: [],        // <-- added: store rotblock data/anchors
     monster: null,
     playerVisited: [],     // counts of visits per tile (used by monster learning)
     gameOver: false,
@@ -34,7 +35,10 @@ function init() {
     game.won = false;
     game.frameCount = 0;
     game.switches = [];
+    game.rotblocks = [];                 // reset rotblocks
     game.playerVisited = [];
+    game.prevPlayer = null;              // track for swap/crossing detection
+    game.prevMonster = null;
     for (let y = 0; y < N; y++) {
         game.playerVisited[y] = [];
         for (let x = 0; x < N; x++) game.playerVisited[y][x] = 0;
@@ -82,7 +86,7 @@ function placeFeatures() {
     const doorPos = candidates[Math.floor(Math.random()*candidates.length)];
     game.maze[doorPos.y][doorPos.x] = DOOR;
 
-    // place a few spikes (off by default). We'll mark spike tiles as SPIKE but a switch toggles global spikeOn map
+    // place a few spikes (off by default).
     const spikePositions = [];
     for (let i=0;i<6;i++){
         const p = candidates[Math.floor(Math.random()*candidates.length)];
@@ -93,13 +97,23 @@ function placeFeatures() {
     }
 
     // place a few rotblocks (2x2 blocks that can be rotated)
-    const rotblocks = [];
+    // store rotblocks in game.rotblocks as {x,y,tiles:[[a,b],[c,d]]}
     for (let i=0;i<3;i++){
         const p = candidates[Math.floor(Math.random()*candidates.length)];
         if (p.x < N-2 && p.y < N-2) {
-            rotblocks.push({x:p.x,y:p.y});
-            // mark a center tile visually (not necessary for maze collision)
-            game.maze[p.y][p.x] = ROTBLOCK;
+            // capture the current 2x2 tile types (or create a small pattern if walls)
+            const tx = p.x, ty = p.y;
+            const a = game.maze[ty][tx] === WALL ? FLOOR : game.maze[ty][tx];
+            const b = game.maze[ty][tx+1] === WALL ? WALL : game.maze[ty][tx+1];
+            const c = game.maze[ty+1][tx] === WALL ? WALL : game.maze[ty+1][tx];
+            const d = game.maze[ty+1][tx+1] === WALL ? FLOOR : game.maze[ty+1][tx+1];
+            const tiles = [[a,b],[c,d]];
+            game.rotblocks.push({x:tx, y:ty, tiles});
+            // write tiles back and mark anchor cell visually as ROTBLOCK
+            game.maze[ty][tx] = ROTBLOCK;          // anchor visible as R
+            game.maze[ty][tx+1] = tiles[0][1];
+            game.maze[ty+1][tx] = tiles[1][0];
+            game.maze[ty+1][tx+1] = tiles[1][1];
         }
     }
 
@@ -107,14 +121,18 @@ function placeFeatures() {
     const switchTypes = ['rotate','door','spikes','reroute'];
     for (let i=0;i<4;i++){
         let p = candidates[Math.floor(Math.random()*candidates.length)];
-        // ensure not overriding door/spike/rotblock
-        if (game.maze[p.y][p.x] !== FLOOR) {
+        // ensure not overriding door/spike/rotblock anchor (and also avoid non-floor)
+        if (!p || game.maze[p.y][p.x] !== FLOOR) {
             i--; continue;
         }
         const type = switchTypes[i % switchTypes.length];
         const sw = { x: p.x, y: p.y, type, active: false };
         // link rotblock or door/spikes as needed
-        if (type === 'rotate') sw.target = rotblocks[i % rotblocks.length];
+        if (type === 'rotate') {
+            // pick a rotblock from game.rotblocks
+            if (game.rotblocks.length > 0) sw.target = game.rotblocks[i % game.rotblocks.length];
+            else { i--; continue; }
+        }
         if (type === 'door') sw.target = doorPos;
         if (type === 'spikes') sw.targets = spikePositions;
         game.switches.push(sw);
@@ -126,17 +144,23 @@ function placeFeatures() {
 }
 
 // Rotate a 2x2 block anchored at tx,ty clockwise (if within bounds)
+// Now operates on a rotblock object (reads/writes its tiles and the maze)
 function rotate2x2(tx, ty) {
-    if (tx < 1 || ty < 1 || tx+1 >= N-1 || ty+1 >= N-1) return;
-    const a = game.maze[ty][tx];
-    const b = game.maze[ty][tx+1];
-    const c = game.maze[ty+1][tx];
-    const d = game.maze[ty+1][tx+1];
-    // rotate clockwise: [c a] [d b] -> [a b] etc. We'll rotate tile types (walls/floor/spike)
-    game.maze[ty][tx] = c;
-    game.maze[ty][tx+1] = a;
-    game.maze[ty+1][tx+1] = b;
-    game.maze[ty+1][tx] = d;
+    // find rotblock by anchor
+    const rb = game.rotblocks.find(r => r.x === tx && r.y === ty);
+    if (!rb) return;
+    const t = rb.tiles;
+    // rotate clockwise: new = [[c,a],[d,b]]
+    const newTiles = [
+        [t[1][0], t[0][0]],
+        [t[1][1], t[0][1]]
+    ];
+    rb.tiles = newTiles;
+    // write back to maze: keep anchor cell as ROTBLOCK for visibility
+    game.maze[ty][tx] = ROTBLOCK;
+    game.maze[ty][tx+1] = newTiles[0][1];
+    game.maze[ty+1][tx] = newTiles[1][0];
+    game.maze[ty+1][tx+1] = newTiles[1][1];
 }
 
 // Simple reroute: carve a short corridor from random wall near switch
@@ -176,6 +200,9 @@ function update() {
     if (game.gameOver || game.won) return;
     game.frameCount++;
 
+    // record previous player position for crossing/swap detection
+    game.prevPlayer = { x: game.player.x, y: game.player.y };
+
     // Handle player movement (single-tile per keypress)
     let newX = game.player.x;
     let newY = game.player.y;
@@ -212,23 +239,28 @@ function update() {
 
     // Update monster (moves toward the most-visited tiles / learns player paths)
     updateMonster();
-}
 
-function activateSwitch(sw) {
-    sw.active = !sw.active; // toggle on first activation for visual
-    switch(sw.type) {
-        case 'rotate':
-            if (sw.target) rotate2x2(sw.target.x, sw.target.y);
-            break;
-        case 'door':
-            if (sw.target) game.maze[sw.target.y][sw.target.x] = FLOOR; // open door
-            break;
-        case 'spikes':
-            game.spikesOn = !game.spikesOn;
-            break;
-        case 'reroute':
-            rerouteNear(sw.x, sw.y);
-            break;
+    // Collision detection after both moves:
+    if (game.monster) {
+        // direct collision
+        if (game.player.x === game.monster.x && game.player.y === game.monster.y) {
+            onPlayerDeath();
+            return;
+        }
+        // crossing / swap detection (player and monster swapped tiles between frames)
+        if (game.prevPlayer && game.prevMonster) {
+            const swapped = game.player.x === game.prevMonster.x && game.player.y === game.prevMonster.y
+                         && game.monster.x === game.prevPlayer.x && game.monster.y === game.prevPlayer.y;
+            if (swapped) {
+                onPlayerDeath();
+                return;
+            }
+        }
+        // also handle case where player moved through tile just vacated by monster (player passed quickly)
+        if (game.prevMonster && game.player.x === game.prevMonster.x && game.player.y === game.prevMonster.y) {
+            onPlayerDeath();
+            return;
+        }
     }
 }
 
@@ -295,6 +327,9 @@ function monsterNextStepTowards(tx, ty) {
 function updateMonster() {
     const m = game.monster;
     if (!m) return;
+    // record previous monster position for swap detection
+    game.prevMonster = { x: m.x, y: m.y };
+
     if (m.moveCooldown > 0) { m.moveCooldown--; return; }
 
     // determine target based on learned heat
@@ -315,7 +350,7 @@ function updateMonster() {
         }
     }
 
-    // collision with player?
+    // collision with player? (also handled after update)
     if (m.x === game.player.x && m.y === game.player.y) {
         onPlayerDeath();
         return;
