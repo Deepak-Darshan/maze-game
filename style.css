@@ -9,6 +9,22 @@ body {
     color: #eee;
 }
 
+.main-layout {
+    display: flex;
+    gap: 30px;
+    align-items: flex-start;
+    justify-content: center;
+    flex-wrap: wrap;
+    width: 100%;
+    max-width: 1800px;
+}
+
+.game-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 #gameCanvas {
     border: 3px solid #16213e;
     box-shadow: 0 0 20px rgba(0,255,255,0.3);
@@ -23,6 +39,64 @@ body {
     align-items: center;
 }
 
+.btn {
+    padding: 10px 20px;
+    border-radius: 5px;
+    border: 2px solid;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    font-family: 'Courier New', monospace;
+    transition: all 0.2s;
+}
+
+.btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+.btn:active {
+    transform: scale(0.95);
+}
+
+.btn-reset {
+    background: #16213e;
+    color: #0ff;
+    border-color: #0ff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+}
+
+.btn-reset:hover {
+    background: #1a2a3e;
+    box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+}
+
+.btn-reset::after {
+    content: '↻';
+    font-size: 22px;
+    display: inline-block;
+    transition: transform 0.3s;
+    margin-left: 5px;
+}
+
+.btn-reset:hover::after {
+    transform: rotate(180deg);
+}
+
+.btn-skip {
+    background: #3e1621;
+    color: #ff4444;
+    border-color: #ff4444;
+}
+
+.btn-skip:hover {
+    background: #4a1a2a;
+    box-shadow: 0 0 10px rgba(255, 68, 68, 0.5);
+}
+
 .stat {
     background: #16213e;
     padding: 10px 20px;
@@ -31,12 +105,44 @@ body {
 }
 
 .instructions {
-    max-width: 600px;
-    margin-top: 20px;
+    width: 350px;
     background: #16213e;
     padding: 20px;
     border-radius: 10px;
     line-height: 1.6;
+    border: 2px solid #0ff;
+    box-shadow: 0 0 15px rgba(0, 255, 255, 0.2);
+    max-height: 630px;
+    overflow-y: auto;
+}
+
+/* Custom scrollbar styling for instructions */
+.instructions::-webkit-scrollbar {
+    width: 12px;
+}
+
+.instructions::-webkit-scrollbar-track {
+    background: #16213e;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
+    margin: 0;
+}
+
+.instructions::-webkit-scrollbar-thumb {
+    background: #0ff;
+    border-radius: 10px;
+    border: 2px solid #16213e;
+}
+
+.instructions::-webkit-scrollbar-thumb:hover {
+    background: #0cc;
+    box-shadow: 0 0 5px rgba(0, 255, 255, 0.5);
+}
+
+/* Firefox scrollbar styling */
+.instructions {
+    scrollbar-width: thin;
+    scrollbar-color: #0ff #16213e;
 }
 
 h2 {
@@ -58,4 +164,78 @@ ul {
 
 li {
     margin: 8px 0;
+}
+
+.effects {
+    margin: 10px 0;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    min-height: 30px;
+}
+
+.effect-indicator {
+    background: #16213e;
+    padding: 5px 15px;
+    border-radius: 5px;
+    border: 2px solid #0ff;
+    font-size: 16px;
+}
+
+.legend {
+    background: #16213e;
+    padding: 20px;
+    border-radius: 10px;
+    border: 2px solid #0ff;
+    min-width: 250px;
+    box-shadow: 0 0 15px rgba(0, 255, 255, 0.2);
+}
+
+.legend h2 {
+    color: #0ff;
+    margin-top: 0;
+    margin-bottom: 15px;
+    text-align: center;
+    font-size: 20px;
+}
+
+.legend-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.legend-table tr {
+    border-bottom: 1px solid rgba(0, 255, 255, 0.2);
+}
+
+.legend-table tr:last-child {
+    border-bottom: none;
+}
+
+.legend-icon {
+    width: 40px;
+    padding: 8px;
+    vertical-align: middle;
+}
+
+.legend-tile {
+    width: 30px;
+    height: 30px;
+    border-radius: 3px;
+    margin: 0 auto;
+}
+
+.legend-canvas {
+    display: block;
+    margin: 0 auto;
+    border: 1px solid rgba(0, 255, 255, 0.3);
+    border-radius: 3px;
+    background: #0f0f1e;
+}
+
+.legend-text {
+    padding: 8px;
+    font-size: 14px;
+    color: #eee;
+    vertical-align: middle;
 }

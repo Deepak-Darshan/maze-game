@@ -8,22 +8,115 @@
 </head>
 <body>
     <div class="hud">
+        <button id="resetBtn" class="btn btn-reset">Reset</button>
         <div class="stat">Keys: <span id="keyCount">0</span>/3</div>
         <div class="stat">Deaths: <span id="deathCount">0</span></div>
         <div class="stat">Time: <span id="timeCount">0</span>s</div>
+        <div class="stat">Monster Speed: <span id="monsterSpeed">1.0</span>x</div>
+        <button id="skipBtn" class="btn btn-skip">Skip</button>
     </div>
-    <canvas id="gameCanvas" width="630" height="630"></canvas>
-    <div class="instructions">
+    <div id="effectsBar" class="effects"></div>
+    <div class="main-layout">
+        <div class="instructions">
         <h2>How to Play</h2>
-        <p><strong>Goal:</strong> Collect all 3 keys and reach the exit before the monster catches you!</p>
-        <p><strong>Controls:</strong> <span class="key">WASD</span> or <span class="key">Arrow Keys</span> to move, <span class="key">R</span> to restart</p>
-        <p><strong>Mechanics:</strong></p>
+        <p><strong>Goal:</strong> Collect all 3 keys and reach the exit door before the monster catches you!</p>
+        <p><strong>Controls:</strong></p>
         <ul>
-            <li><strong>Keys:</strong> Collect all 3 to unlock the exit door</li>
-            <li><strong>Monster:</strong> Chases you using your footprints - it learns your patterns!</li>
-            <li><strong>Safe Zones:</strong> Green areas where monsters can't enter (brief safety)</li>
-            <li><strong>Strategy:</strong> Plan your route, use safe zones wisely, and don't get cornered!</li>
+            <li><span class="key">WASD</span> or <span class="key">Arrow Keys</span> - Move your character</li>
+            <li><span class="key">Space</span> - Place a bomb (if you have one)</li>
+            <li><span class="key">R</span> - Restart the game</li>
         </ul>
+        <p><strong>Game Elements:</strong></p>
+        <ul>
+            <li><strong>Keys (⭐):</strong> Collect all 3 glowing star keys to unlock the exit door</li>
+            <li><strong>Exit Door:</strong> Opens when you collect all keys - reach it to win!</li>
+            <li><strong>Monster:</strong> Red creature that chases you. It follows the shortest path and speeds up by 20% when on your trail!</li>
+            <li><strong>Safe Zones (Green):</strong> Temporary safety from the monster. The monster can break them if you stay idle for 3+ seconds!</li>
+            <li><strong>Checkpoints:</strong> Golden rings that save your progress. You'll respawn at the last checkpoint you crossed when you die</li>
+            <li><strong>Spikes:</strong> Red tiles that damage you - avoid them!</li>
+            <li><strong>Bomb Pickups:</strong> Collect bombs to break walls. Press Space to place, explodes after 1 second, breaks adjacent walls (8 tiles)</li>
+            <li><strong>Speed Power-up (⚡):</strong> Blue circle that temporarily increases your movement speed</li>
+        </ul>
+        <p><strong>Strategy Tips:</strong></p>
+        <ul>
+            <li>Plan your route before moving - the monster learns your patterns!</li>
+            <li>Use safe zones wisely, but don't stay too long (monster can break them!)</li>
+            <li>Use bombs strategically to create new paths or escape routes</li>
+            <li>Activate checkpoints to avoid respawning at the start</li>
+            <li>Watch the monster's speed indicator - it increases when following your trail!</li>
+            <li>Don't get cornered - always have an escape route!</li>
+        </ul>
+        </div>
+        <div class="game-container">
+            <canvas id="gameCanvas" width="630" height="630"></canvas>
+        </div>
+        <div class="legend">
+            <h2>Maze Legend</h2>
+            <table class="legend-table">
+                <tr>
+                    <td class="legend-icon">
+                        <div class="legend-tile" style="background: #0f0f1e; border: 1px solid #1a1a2e;"></div>
+                    </td>
+                    <td class="legend-text">Floor (Walkable)</td>
+                </tr>
+                <tr>
+                    <td class="legend-icon">
+                        <div class="legend-tile" style="background: #2d3561; border: 1px solid #1a1f3a;"></div>
+                    </td>
+                    <td class="legend-text">Wall (Blocked)</td>
+                </tr>
+                <tr>
+                    <td class="legend-icon">
+                        <div class="legend-tile" style="background: #1a4d2e; border: 1px solid #2d8659;">
+                            <div style="background: #2d8659; width: 80%; height: 80%; margin: 10% auto; border-radius: 2px;"></div>
+                        </div>
+                    </td>
+                    <td class="legend-text">Safe Zone</td>
+                </tr>
+                <tr>
+                    <td class="legend-icon">
+                        <canvas class="legend-canvas" id="legend-key" width="30" height="30"></canvas>
+                    </td>
+                    <td class="legend-text">Key (Star)</td>
+                </tr>
+                <tr>
+                    <td class="legend-icon">
+                        <canvas class="legend-canvas" id="legend-door" width="30" height="30"></canvas>
+                    </td>
+                    <td class="legend-text">Exit Door</td>
+                </tr>
+                <tr>
+                    <td class="legend-icon">
+                        <canvas class="legend-canvas" id="legend-monster" width="30" height="30"></canvas>
+                    </td>
+                    <td class="legend-text">Monster</td>
+                </tr>
+                <tr>
+                    <td class="legend-icon">
+                        <canvas class="legend-canvas" id="legend-player" width="30" height="30"></canvas>
+                    </td>
+                    <td class="legend-text">Player (Angel)</td>
+                </tr>
+                <tr>
+                    <td class="legend-icon">
+                        <canvas class="legend-canvas" id="legend-spike" width="30" height="30"></canvas>
+                    </td>
+                    <td class="legend-text">Spikes (Active)</td>
+                </tr>
+                <tr>
+                    <td class="legend-icon">
+                        <canvas class="legend-canvas" id="legend-bomb" width="30" height="30"></canvas>
+                    </td>
+                    <td class="legend-text">Bomb Pickup</td>
+                </tr>
+                <tr>
+                    <td class="legend-icon">
+                        <canvas class="legend-canvas" id="legend-powerup" width="30" height="30"></canvas>
+                    </td>
+                    <td class="legend-text">Speed Power-up</td>
+                </tr>
+            </table>
+        </div>
     </div>
 
     <script src="game.js"></script>
